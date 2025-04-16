@@ -2,11 +2,13 @@ import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
-import Redis from 'ioredis';
 
 // Initialize Express
 const app = express();
-const PORT = 3000; // Hardcoded port
+const PORT = 3000;
+
+// In-memory storage for OTP codes
+const otpStorage = new Map();
 
 // Hardcoded configuration (replace with your actual values)
 const config = {
@@ -15,16 +17,12 @@ const config = {
     templateId: 'template_ge84wl1',
     publicKey: 'kGWlSshHzlgHp0Nke'
   },
-  redisUrl: 'redis://localhost:6379', // Hardcoded Redis URL
   allowedOrigins: [
     'https://your-flutter-app-domain.com',
     'http://localhost:3000',
     'http://localhost:8080'
   ]
 };
-
-// Initialize Redis
-const redis = new Redis(config.redisUrl);
 
 // Middleware
 app.use(cors({
@@ -37,8 +35,8 @@ app.use(express.json());
 
 // Rate limiting
 const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 requests per windowMs
   message: 'Too many OTP requests from this IP, please try again later'
 });
 
@@ -46,6 +44,19 @@ const otpLimiter = rateLimit({
 function generateCode() {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
+
+// Cleanup expired OTPs
+function cleanupExpiredOtps() {
+  const now = Date.now();
+  for (const [email, data] of otpStorage.entries()) {
+    if (data.expiresAt < now) {
+      otpStorage.delete(email);
+    }
+  }
+}
+
+// Schedule regular cleanup
+setInterval(cleanupExpiredOtps, 60 * 1000); // Run every minute
 
 // POST /send-otp
 app.post('/send-otp', otpLimiter, async (req, res) => {
@@ -56,8 +67,10 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please provide a valid email address' });
     }
 
-    const recentOtp = await redis.get(`otp:${email}`);
-    if (recentOtp) {
+    // Cleanup before checking for recent OTPs
+    cleanupExpiredOtps();
+
+    if (otpStorage.has(email)) {
       return res.status(429).json({
         success: false,
         message: 'An OTP was recently sent. Please wait before requesting another.'
@@ -65,13 +78,13 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
     }
 
     const otp = generateCode();
-    const expiresAt = Date.now() + 5 * 60 * 1000;
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes expiration
 
-    await redis.setex(`otp:${email}`, 300, JSON.stringify({
+    otpStorage.set(email, {
       code: otp,
       expiresAt,
       attempts: 0
-    }));
+    });
 
     const emailResponse = await axios.post(
       'https://api.emailjs.com/api/v1.0/email/send',
@@ -94,7 +107,7 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
     if (emailResponse.status === 200) {
       return res.json({ success: true, message: 'OTP sent successfully' });
     } else {
-      await redis.del(`otp:${email}`);
+      otpStorage.delete(email);
       throw new Error('Email service failed');
     }
   } catch (error) {
@@ -112,33 +125,33 @@ app.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email and OTP code are required' });
     }
 
-    const otpData = await redis.get(`otp:${email}`);
+    cleanupExpiredOtps();
+
+    const otpData = otpStorage.get(email);
     if (!otpData) {
       return res.status(400).json({ success: false, message: 'OTP expired or not found. Please request a new one.' });
     }
 
-    const { code: storedCode, expiresAt, attempts } = JSON.parse(otpData);
-
-    if (Date.now() > expiresAt) {
-      await redis.del(`otp:${email}`);
+    if (Date.now() > otpData.expiresAt) {
+      otpStorage.delete(email);
       return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
     }
 
-    if (attempts >= 3) {
-      await redis.del(`otp:${email}`);
+    if (otpData.attempts >= 3) {
+      otpStorage.delete(email);
       return res.status(400).json({ success: false, message: 'Too many attempts. OTP invalidated. Please request a new one.' });
     }
 
-    if (code !== storedCode) {
-      await redis.setex(`otp:${email}`, 300, JSON.stringify({
-        code: storedCode,
-        expiresAt,
-        attempts: attempts + 1
-      }));
+    if (code !== otpData.code) {
+      otpStorage.set(email, {
+        code: otpData.code,
+        expiresAt: otpData.expiresAt,
+        attempts: otpData.attempts + 1
+      });
       return res.status(400).json({ success: false, message: 'Invalid OTP code' });
     }
 
-    await redis.del(`otp:${email}`);
+    otpStorage.delete(email);
     return res.json({ success: true, message: 'OTP verified successfully' });
 
   } catch (error) {
@@ -149,10 +162,14 @@ app.post('/verify-otp', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'healthy' });
+  res.status(200).json({ 
+    status: 'healthy',
+    activeOtps: otpStorage.size
+  });
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 OTP Service running on port ${PORT}`);
+  console.log(`Using in-memory OTP storage (not Redis)`);
 });
