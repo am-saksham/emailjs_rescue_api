@@ -18,7 +18,7 @@ const config = {
     publicKey: 'kGWlSshHzlgHp0Nke'
   },
   allowedOrigins: [
-    'https://your-flutter-app-domain.com',
+    'https://emailjs-rescue-api.onrender.com',
     'http://localhost:3000',
     'http://localhost:8080'
   ]
