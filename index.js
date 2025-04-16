@@ -176,7 +176,7 @@ app.post('/verify-otp', async (req, res) => {
   try {
     const { email, code } = req.body;
 
-    // Validate input
+    // Input validation
     if (!email || !code) {
       return res.status(400).json({ 
         success: false, 
@@ -184,7 +184,7 @@ app.post('/verify-otp', async (req, res) => {
       });
     }
 
-    // Check OTP validity
+    // OTP validation checks
     cleanupExpiredOtps();
     const otpData = otpStorage.get(email);
     
@@ -223,25 +223,28 @@ app.post('/verify-otp', async (req, res) => {
       });
     }
 
-    // OTP is valid - now verify volunteer exists and get their details
-    const volunteerCheck = await axios.get(
-      `${config.volunteerApiBaseUrl}/api/volunteers/${email}`
+    // Step 1: Check if volunteer exists by email
+    const checkResponse = await axios.get(
+      `${config.volunteerApiBaseUrl}/api/volunteers/${encodeURIComponent(email)}`
     );
 
-    if (!volunteerCheck.data.exists) {
+    // Handle case where volunteer doesn't exist
+    if (!checkResponse.data.exists) {
       return res.status(404).json({
         success: false,
         message: 'Volunteer not found'
       });
     }
 
-    // Get full volunteer details using the ID from the check response
+    // Step 2: Get full volunteer details using the _id from check response
     const volunteerDetails = await axios.get(
-      `${config.volunteerApiBaseUrl}/api/volunteers/${volunteerCheck.data._id}`
+      `${config.volunteerApiBaseUrl}/api/volunteers/${checkResponse.data._id}`
     );
 
+    // Clean up OTP
     otpStorage.delete(email);
     
+    // Return success response with volunteer data
     return res.json({ 
       success: true,
       message: 'OTP verified successfully',
@@ -255,6 +258,15 @@ app.post('/verify-otp', async (req, res) => {
 
   } catch (error) {
     console.error('OTP verification error:', error);
+    
+    // Special handling for 404 errors
+    if (error.response && error.response.status === 404) {
+      return res.status(404).json({
+        success: false,
+        message: 'Volunteer not found'
+      });
+    }
+
     return res.status(500).json({ 
       success: false, 
       message: 'Failed to verify OTP. Please try again.',
