@@ -15,7 +15,7 @@ const config = {
     templateId: 'template_ge84wl1',
     publicKey: 'kGWlSshHzlgHp0Nke'
   },
-  redisUrl: 'redis://localhost:6379',
+  redisUrl: 'redis://localhost:6379', // Hardcoded Redis URL
   allowedOrigins: [
     'https://your-flutter-app-domain.com',
     'http://localhost:3000',
@@ -37,14 +37,14 @@ app.use(express.json());
 
 // Rate limiting
 const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   message: 'Too many OTP requests from this IP, please try again later'
 });
 
 // Generate random 4-digit code
 function generateCode() {
-    return Math.floor(1000 + Math.random() * 9000).toString();
+  return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
 // POST /send-otp
@@ -155,5 +155,4 @@ app.get('/health', (req, res) => {
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 OTP Service running on port ${PORT}`);
-  console.log(`API Base URL: http://localhost:${PORT}`);
 });
