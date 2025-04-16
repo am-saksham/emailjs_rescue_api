@@ -101,7 +101,7 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
     // Check if user exists in volunteer system
     try {
       const volunteerResponse = await axios.get(
-        `${config.volunteerApiBaseUrl}/api/volunteers/${email}`
+        `${config.volunteerApiBaseUrl}/api/volunteers/email/${email}`
       );
       
       if (!volunteerResponse.data.exists) {
@@ -225,7 +225,7 @@ app.post('/verify-otp', async (req, res) => {
 
     // Step 1: Check if volunteer exists by email
     const checkResponse = await axios.get(
-      `${config.volunteerApiBaseUrl}/api/volunteers/${encodeURIComponent(email)}`
+      `${config.volunteerApiBaseUrl}/api/volunteers/email/${encodeURIComponent(email)}`
     );
 
     // Handle case where volunteer doesn't exist
