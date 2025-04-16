@@ -2,17 +2,23 @@ import express from 'express';
 import axios from 'axios';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
+import { MongoClient } from 'mongodb';
 
 const app = express();
 const PORT = 3000;
 const otpStorage = new Map();
 
+// MongoDB connection URI - replace with your actual connection string
+const mongoUri = 'mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/emergency_app?retryWrites=true&w=majority&appName=Cluster0';
+const dbName = 'emergency_app'; // Replace with your database name
+const usersCollection = 'volunteers'; // Replace with your collection name
+
 // Configuration - REPLACE THESE WITH YOUR ACTUAL VALUES
 const config = {
   emailjs: {
-    serviceId: 'service_xx8x14i',      // Replace with your actual service ID
-    templateId: 'template_ge84wl1',    // Replace with your actual template ID
-    publicKey: 'kGWlSshHzlgHp0Nke'     // Replace with your actual public key
+    serviceId: 'service_xx8x14i',
+    templateId: 'template_ge84wl1',
+    publicKey: 'kGWlSshHzlgHp0Nke'
   }
 };
 
@@ -25,6 +31,22 @@ const otpLimiter = rateLimit({
   max: 5,
   message: 'Too many OTP requests from this IP, please try again later'
 });
+
+// MongoDB client
+let client;
+let db;
+
+async function connectToMongoDB() {
+  try {
+    client = new MongoClient(mongoUri);
+    await client.connect();
+    db = client.db(dbName);
+    console.log('Connected to MongoDB');
+  } catch (err) {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  }
+}
 
 function generateCode() {
   return Math.floor(1000 + Math.random() * 9000).toString();
@@ -95,7 +117,7 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
       {
         headers: {
           'Content-Type': 'application/json',
-          'Origin': 'http://localhost' // Required by EmailJS
+          'Origin': 'http://localhost'
         },
         timeout: 10000
       }
@@ -129,7 +151,7 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
     return res.status(500).json({ 
       success: false, 
       message: 'Failed to send OTP. Please try again later.',
-      error: error.message // Only for debugging, remove in production
+      error: error.message
     });
   }
 });
@@ -183,10 +205,29 @@ app.post('/verify-otp', async (req, res) => {
       });
     }
 
+    // OTP is valid - fetch user data from MongoDB
+    const user = await db.collection(usersCollection).findOne({ email });
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found in database'
+      });
+    }
+
     otpStorage.delete(email);
+    
     return res.json({ 
-      success: true, 
-      message: 'OTP verified successfully' 
+      success: true,
+      message: 'OTP verified successfully',
+      user: {
+        email: user.email,
+        name: user.name,
+        profile_pic: user.profile_pic,
+        phone: user.phone,
+        address: user.address
+        // Add other user fields as needed
+      }
     });
 
   } catch (error) {
@@ -198,9 +239,45 @@ app.post('/verify-otp', async (req, res) => {
   }
 });
 
+// New endpoint to fetch user data directly
+app.get('/api/users/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    const user = await db.collection(usersCollection).findOne({ email });
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    return res.json({
+      success: true,
+      user: {
+        email: user.email,
+        name: user.name,
+        profile_pic: user.profile_pic,
+        phone: user.phone,
+        address: user.address
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch user data'
+    });
+  }
+});
+
 app.get('/health', (req, res) => {
+  const mongoStatus = client ? 'connected' : 'disconnected';
+  
   res.status(200).json({ 
     status: 'healthy',
+    mongo: mongoStatus,
     activeOtps: otpStorage.size,
     config: {
       emailjsConfigured: !!config.emailjs.serviceId && !!config.emailjs.templateId && !!config.emailjs.publicKey
@@ -208,13 +285,25 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log('Current configuration:', {
-    emailjs: {
-      serviceId: config.emailjs.serviceId,
-      templateId: config.emailjs.templateId,
-      publicKey: config.emailjs.publicKey ? '*****' : 'MISSING'
-    }
+// Connect to MongoDB when server starts
+connectToMongoDB().then(() => {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log('Current configuration:', {
+      emailjs: {
+        serviceId: config.emailjs.serviceId,
+        templateId: config.emailjs.templateId,
+        publicKey: config.emailjs.publicKey ? '*****' : 'MISSING'
+      }
+    });
   });
+});
+
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  if (client) {
+    await client.close();
+    console.log('MongoDB connection closed');
+  }
+  process.exit(0);
 });
