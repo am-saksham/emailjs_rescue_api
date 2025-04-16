@@ -16,21 +16,11 @@ const config = {
     serviceId: 'service_xx8x14i',
     templateId: 'template_ge84wl1',
     publicKey: 'kGWlSshHzlgHp0Nke'
-  },
-  allowedOrigins: [
-    'https://emailjs-rescue-api.onrender.com',
-    'http://localhost:3000',
-    'http://localhost:8080'
-  ]
+  }
 };
 
-// Middleware
-app.use(cors({
-  origin: config.allowedOrigins,
-  methods: ['POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
-}));
-
+// Middleware - Simplified CORS
+app.use(cors()); // Allow all origins (for development)
 app.use(express.json());
 
 // Rate limiting
@@ -94,12 +84,13 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
         user_id: config.emailjs.publicKey,
         template_params: {
           to_email: email,
-          otp_code: otp,
+          user_code: otp,
         },
       },
       {
         headers: {
           'Content-Type': 'application/json',
+          'Origin': 'http://localhost' // Required by EmailJS
         },
       }
     );
