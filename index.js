@@ -233,22 +233,32 @@ app.post('/verify-otp', async (req, res) => {
       });
     }
 
-    // Get full volunteer details
-    const volunteerDetails = await axios.get(
-      `${config.volunteerApiBaseUrl}/api/volunteers/${volunteerResponse.data._id}`
+    // The volunteer exists, now get their full details
+    // First, let's find the volunteer by email to get their ID
+    const volunteers = await axios.get(
+      `${config.volunteerApiBaseUrl}/api/volunteers`,
+      { params: { email } }
     );
 
+    if (!volunteers.data || volunteers.data.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Volunteer details not found'
+      });
+    }
+
+    const volunteer = volunteers.data[0]; // Assuming first match is correct
     otpStorage.delete(email);
     
     return res.json({ 
       success: true,
       message: 'OTP verified successfully',
       user: {
-        email: volunteerDetails.data.email,
-        name: volunteerDetails.data.name,
-        profile_pic: volunteerDetails.data.image,
-        phone: volunteerDetails.data.phone,
-        volunteer_id: volunteerDetails.data._id
+        email: volunteer.email,
+        name: volunteer.name,
+        profile_pic: volunteer.image, // Changed from volunteer.data.image to volunteer.image
+        phone: volunteer.phone,
+        volunteer_id: volunteer._id
       }
     });
 
@@ -256,7 +266,8 @@ app.post('/verify-otp', async (req, res) => {
     console.error('OTP verification error:', error);
     return res.status(500).json({ 
       success: false, 
-      message: 'Failed to verify OTP. Please try again.' 
+      message: 'Failed to verify OTP. Please try again.',
+      error: error.message // Added for debugging
     });
   }
 });
