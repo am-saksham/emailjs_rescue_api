@@ -176,6 +176,7 @@ app.post('/verify-otp', async (req, res) => {
   try {
     const { email, code } = req.body;
 
+    // Validate input
     if (!email || !code) {
       return res.status(400).json({ 
         success: false, 
@@ -183,9 +184,10 @@ app.post('/verify-otp', async (req, res) => {
       });
     }
 
+    // Check OTP validity
     cleanupExpiredOtps();
-
     const otpData = otpStorage.get(email);
+    
     if (!otpData) {
       return res.status(400).json({ 
         success: false, 
@@ -221,44 +223,33 @@ app.post('/verify-otp', async (req, res) => {
       });
     }
 
-    // OTP is valid - fetch volunteer data from the volunteer API
-    const volunteerResponse = await axios.get(
+    // OTP is valid - now verify volunteer exists and get their details
+    const volunteerCheck = await axios.get(
       `${config.volunteerApiBaseUrl}/api/volunteers/${email}`
     );
 
-    if (!volunteerResponse.data.exists) {
+    if (!volunteerCheck.data.exists) {
       return res.status(404).json({
         success: false,
         message: 'Volunteer not found'
       });
     }
 
-    // The volunteer exists, now get their full details
-    // First, let's find the volunteer by email to get their ID
-    const volunteers = await axios.get(
-      `${config.volunteerApiBaseUrl}/api/volunteers`,
-      { params: { email } }
+    // Get full volunteer details using the ID from the check response
+    const volunteerDetails = await axios.get(
+      `${config.volunteerApiBaseUrl}/api/volunteers/${volunteerCheck.data._id}`
     );
 
-    if (!volunteers.data || volunteers.data.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Volunteer details not found'
-      });
-    }
-
-    const volunteer = volunteers.data[0]; // Assuming first match is correct
     otpStorage.delete(email);
     
     return res.json({ 
       success: true,
       message: 'OTP verified successfully',
       user: {
-        email: volunteer.email,
-        name: volunteer.name,
-        profile_pic: volunteer.image, // Changed from volunteer.data.image to volunteer.image
-        phone: volunteer.phone,
-        volunteer_id: volunteer._id
+        email: volunteerDetails.data.email,
+        name: volunteerDetails.data.name,
+        profile_pic: volunteerDetails.data.image,
+        volunteer_id: volunteerDetails.data._id
       }
     });
 
@@ -267,7 +258,6 @@ app.post('/verify-otp', async (req, res) => {
     return res.status(500).json({ 
       success: false, 
       message: 'Failed to verify OTP. Please try again.',
-      error: error.message // Added for debugging
     });
   }
 });
