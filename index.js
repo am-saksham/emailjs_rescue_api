@@ -8,26 +8,31 @@ const app = express();
 const PORT = 3000;
 const otpStorage = new Map();
 
-// MongoDB connection URI - replace with your actual connection string
-const mongoUri = 'mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/emergency_app?retryWrites=true&w=majority&appName=Cluster0';
-const dbName = 'emergency_app'; // Replace with your database name
-const usersCollection = 'volunteers'; // Replace with your collection name
-
-// Configuration - REPLACE THESE WITH YOUR ACTUAL VALUES
+// Configuration
 const config = {
+  mongoUri: 'mongodb+srv://amsakshamgupta:admin1234@cluster0.z20foql.mongodb.net/emergency_app?retryWrites=true&w=majority&appName=Cluster0',
+  dbName: 'emergency_app',
+  usersCollection: 'volunteers',
   emailjs: {
     serviceId: 'service_xx8x14i',
     templateId: 'template_ge84wl1',
     publicKey: 'kGWlSshHzlgHp0Nke'
-  }
+  },
+  volunteerApiBaseUrl: 'https://rescue-api-zwxb.onrender.com'
 };
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
+// Rate limiting
 const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 5,
   message: 'Too many OTP requests from this IP, please try again later'
 });
@@ -38,9 +43,15 @@ let db;
 
 async function connectToMongoDB() {
   try {
-    client = new MongoClient(mongoUri);
+    client = new MongoClient(config.mongoUri, {
+      serverApi: {
+        version: '1',
+        strict: true,
+        deprecationErrors: true
+      }
+    });
     await client.connect();
-    db = client.db(dbName);
+    db = client.db(config.dbName);
     console.log('Connected to MongoDB');
   } catch (err) {
     console.error('MongoDB connection error:', err);
@@ -48,6 +59,7 @@ async function connectToMongoDB() {
   }
 }
 
+// Utility functions
 function generateCode() {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
@@ -63,13 +75,13 @@ function cleanupExpiredOtps() {
 
 setInterval(cleanupExpiredOtps, 60 * 1000);
 
+// Routes
 app.post('/send-otp', otpLimiter, async (req, res) => {
   try {
     const { email } = req.body;
 
     // Validate email format
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      console.log('Invalid email format received:', email);
       return res.status(400).json({ 
         success: false, 
         message: 'Please provide a valid email address' 
@@ -80,15 +92,34 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
 
     // Check for recent OTP
     if (otpStorage.has(email)) {
-      console.log('OTP already sent to:', email);
       return res.status(429).json({
         success: false,
         message: 'An OTP was recently sent. Please wait before requesting another.'
       });
     }
 
+    // Check if user exists in volunteer system
+    try {
+      const volunteerResponse = await axios.get(
+        `${config.volunteerApiBaseUrl}/api/volunteers/${email}`
+      );
+      
+      if (!volunteerResponse.data.exists) {
+        return res.status(404).json({
+          success: false,
+          message: 'Email not registered as a volunteer'
+        });
+      }
+    } catch (error) {
+      console.error('Error checking volunteer:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Error verifying volunteer status'
+      });
+    }
+
     const otp = generateCode();
-    const expiresAt = Date.now() + 5 * 60 * 1000;
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
 
     otpStorage.set(email, {
       code: otp,
@@ -96,9 +127,7 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
       attempts: 0
     });
 
-    console.log('Attempting to send OTP:', { email, otp });
-
-    // Prepare EmailJS request data
+    // Send OTP via EmailJS
     const emailjsData = {
       service_id: config.emailjs.serviceId,
       template_id: config.emailjs.templateId,
@@ -108,8 +137,6 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
         user_code: otp,
       }
     };
-
-    console.log('Sending to EmailJS with data:', emailjsData);
 
     const emailResponse = await axios.post(
       'https://api.emailjs.com/api/v1.0/email/send',
@@ -123,11 +150,6 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
       }
     );
 
-    console.log('EmailJS response:', {
-      status: emailResponse.status,
-      data: emailResponse.data
-    });
-
     if (emailResponse.status === 200) {
       return res.json({ 
         success: true, 
@@ -138,12 +160,7 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Error sending OTP:', {
-      message: error.message,
-      stack: error.stack,
-      response: error.response?.data
-    });
-
+    console.error('Error sending OTP:', error);
     if (req.body.email) {
       otpStorage.delete(req.body.email);
     }
@@ -151,7 +168,6 @@ app.post('/send-otp', otpLimiter, async (req, res) => {
     return res.status(500).json({ 
       success: false, 
       message: 'Failed to send OTP. Please try again later.',
-      error: error.message
     });
   }
 });
@@ -205,15 +221,22 @@ app.post('/verify-otp', async (req, res) => {
       });
     }
 
-    // OTP is valid - fetch user data from MongoDB
-    const user = await db.collection(usersCollection).findOne({ email });
-    
-    if (!user) {
+    // OTP is valid - fetch volunteer data from the volunteer API
+    const volunteerResponse = await axios.get(
+      `${config.volunteerApiBaseUrl}/api/volunteers/${email}`
+    );
+
+    if (!volunteerResponse.data.exists) {
       return res.status(404).json({
         success: false,
-        message: 'User not found in database'
+        message: 'Volunteer not found'
       });
     }
+
+    // Get full volunteer details
+    const volunteerDetails = await axios.get(
+      `${config.volunteerApiBaseUrl}/api/volunteers/${volunteerResponse.data._id}`
+    );
 
     otpStorage.delete(email);
     
@@ -221,12 +244,11 @@ app.post('/verify-otp', async (req, res) => {
       success: true,
       message: 'OTP verified successfully',
       user: {
-        email: user.email,
-        name: user.name,
-        profile_pic: user.profile_pic,
-        phone: user.phone,
-        address: user.address
-        // Add other user fields as needed
+        email: volunteerDetails.data.email,
+        name: volunteerDetails.data.name,
+        profile_pic: volunteerDetails.data.image,
+        phone: volunteerDetails.data.phone,
+        volunteer_id: volunteerDetails.data._id
       }
     });
 
@@ -239,45 +261,17 @@ app.post('/verify-otp', async (req, res) => {
   }
 });
 
-// New endpoint to fetch user data directly
-app.get('/api/users/:email', async (req, res) => {
-  try {
-    const { email } = req.params;
-    
-    const user = await db.collection(usersCollection).findOne({ email });
-    
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-    
-    return res.json({
-      success: true,
-      user: {
-        email: user.email,
-        name: user.name,
-        profile_pic: user.profile_pic,
-        phone: user.phone,
-        address: user.address
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching user:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Failed to fetch user data'
-    });
-  }
-});
-
+// Health check endpoint
 app.get('/health', (req, res) => {
   const mongoStatus = client ? 'connected' : 'disconnected';
+  const volunteerApiStatus = 'unknown'; // Could implement actual check
   
   res.status(200).json({ 
     status: 'healthy',
-    mongo: mongoStatus,
+    services: {
+      mongo: mongoStatus,
+      volunteerApi: volunteerApiStatus
+    },
     activeOtps: otpStorage.size,
     config: {
       emailjsConfigured: !!config.emailjs.serviceId && !!config.emailjs.templateId && !!config.emailjs.publicKey
@@ -285,17 +279,10 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Connect to MongoDB when server starts
+// Connect to MongoDB and start server
 connectToMongoDB().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log('Current configuration:', {
-      emailjs: {
-        serviceId: config.emailjs.serviceId,
-        templateId: config.emailjs.templateId,
-        publicKey: config.emailjs.publicKey ? '*****' : 'MISSING'
-      }
-    });
   });
 });
 
@@ -306,4 +293,9 @@ process.on('SIGINT', async () => {
     console.log('MongoDB connection closed');
   }
   process.exit(0);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection:', err);
+  process.exit(1);
 });
